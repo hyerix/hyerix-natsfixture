@@ -1,0 +1,9 @@
+/target
+/dist
+/bundled
+Cargo.lock.bak
+*.swp
+*.log
+.DS_Store
+.idea/
+.vscode/

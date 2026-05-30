@@ -1,0 +1,35 @@
+version: "1"
+listen:
+  host: "127.0.0.1"
+  port: 0
+storage:
+  jetstream_max_memory: "256M"
+  jetstream_max_file: "1G"
+streams:
+  - name: ORDERS
+    subjects: ["orders.>"]
+    retention: limits
+    storage: file
+    replicas: 1
+    seed:
+      - subject: orders.us.created
+        payload: '{"id":"seed-1"}'
+        headers:
+          Content-Type: application/json
+consumers:
+  - stream: ORDERS
+    name: order-processor
+    deliver_policy: all
+    ack_policy: explicit
+    ack_wait: 30s
+    filter_subject: "orders.us.>"
+kv:
+  - bucket: feature-flags
+    history: 5
+    seed:
+      payments_v2: "true"
+      shadow_writes: "false"
+object_store:
+  - bucket: invoices
+log:
+  level: warn

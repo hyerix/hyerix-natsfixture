@@ -1,0 +1,83 @@
+# GitHub Actions example: wire hyerix-natsfixture into a test job.
+#
+# Two patterns shown:
+#  1. `exec` mode (recommended for simple test commands)
+#  2. `spawn` + `kill` (when the test command needs the fixture decoupled)
+#
+# The Homebrew tap install works on macOS + Linux runners. For Windows, download
+# the release binary directly (the `windows-2022` block at the bottom shows how).
+
+name: tests
+
+on: [push, pull_request]
+
+jobs:
+  # ---- Pattern 1: exec mode (simplest) ----
+
+  test-with-exec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install hyerix-natsfixture
+        run: brew install hyerix/tap/hyerix-natsfixture
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: npm ci
+
+      - name: Run tests against an ephemeral NATS
+        run: |
+          hyerix-natsfixture exec \
+            --manifest fixture.yaml \
+            -- npm test
+
+  # ---- Pattern 2: spawn + kill (decoupled lifecycle) ----
+
+  test-with-spawn:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install hyerix-natsfixture
+        run: brew install hyerix/tap/hyerix-natsfixture
+
+      - name: Boot fixture
+        run: |
+          hyerix-natsfixture spawn \
+            --manifest fixture.yaml \
+            --url-file /tmp/nats-url \
+            --pid-file /tmp/nats-pid
+
+      - name: Run tests
+        env:
+          NATS_URL_FILE: /tmp/nats-url
+        run: |
+          export NATS_URL=$(cat $NATS_URL_FILE)
+          pytest tests/
+
+      - name: Tear down fixture
+        if: always()
+        run: hyerix-natsfixture kill --pid-file /tmp/nats-pid
+
+  # ---- Windows runner: download the release binary directly ----
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install hyerix-natsfixture
+        shell: pwsh
+        run: |
+          $version = "0.1.0"
+          $url = "https://github.com/hyerix/hyerix-natsfixture/releases/download/v$version/hyerix-natsfixture-$version-x86_64-pc-windows-msvc.zip"
+          Invoke-WebRequest -Uri $url -OutFile fixture.zip
+          Expand-Archive fixture.zip -DestinationPath bin
+          Add-Content -Path $env:GITHUB_PATH -Value "$pwd\bin\hyerix-natsfixture-$version-x86_64-pc-windows-msvc"
+
+      - name: Run tests
+        run: hyerix-natsfixture exec --manifest fixture.yaml -- go test ./...
