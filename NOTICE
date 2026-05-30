@@ -1,0 +1,21 @@
+hyerix-natsfixture
+Copyright 2026 The hyerix-natsfixture authors
+
+This product is licensed under the Apache License, Version 2.0.
+See the accompanying LICENSE file for the full license text.
+
+----------------------------------------------------------------------
+
+This product bundles NATS server (https://github.com/nats-io/nats-server),
+which is available under the Apache License, Version 2.0.
+
+  Copyright The NATS Authors
+  Licensed under the Apache License, Version 2.0
+
+The bundled NATS server binary is fetched at release-build time directly
+from the official NATS server GitHub release for each target platform,
+verified against the upstream SHA256SUMS, and shipped inside the release
+tarball alongside the hyerix-natsfixture binary. The pinned NATS server
+version for any given hyerix-natsfixture release is recorded in
+.github/workflows/release.yml (env.NATS_SERVER_VERSION) and is reported
+at runtime by `hyerix-natsfixture --version`.

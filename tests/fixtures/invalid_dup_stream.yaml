@@ -1,0 +1,6 @@
+version: "1"
+streams:
+  - name: ORDERS
+    subjects: ["orders.>"]
+  - name: ORDERS
+    subjects: ["other.>"]

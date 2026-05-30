@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        if: matrix.os != 'windows-latest'
+        run: cargo clippy --all-targets -- -D warnings
+      - name: build
+        run: cargo build --all-targets
+
+      - name: install nats-server (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          NATS_VERSION: v2.14.1
+        run: |
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/nats-server-${NATS_VERSION}-linux-amd64.tar.gz" | tar xz
+          sudo mv "nats-server-${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/
+          nats-server --version
+
+      - name: install nats-server (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install nats-server
+          nats-server --version
+
+      - name: install nats-server (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          NATS_VERSION: v2.14.1
+        run: |
+          $url = "https://github.com/nats-io/nats-server/releases/download/$env:NATS_VERSION/nats-server-$env:NATS_VERSION-windows-amd64.zip"
+          Invoke-WebRequest -Uri $url -OutFile nats.zip
+          Expand-Archive nats.zip -DestinationPath .
+          Add-Content -Path $env:GITHUB_PATH -Value "$pwd\nats-server-$env:NATS_VERSION-windows-amd64"
+          & "$pwd\nats-server-$env:NATS_VERSION-windows-amd64\nats-server.exe" --version
+
+      - name: test
+        run: cargo test --all

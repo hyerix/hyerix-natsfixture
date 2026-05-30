@@ -1,0 +1,309 @@
+name: Release
+
+# Bundled NATS server version. Bump by editing NATS_SERVER_VERSION below and
+# cutting a new hyerix-natsfixture tag. CI fetches the matching binary per
+# target from https://github.com/nats-io/nats-server/releases and verifies
+# against the official SHA256SUMS file in the same release.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g., 0.1.0)"
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  NATS_SERVER_VERSION: "2.14.1"
+
+jobs:
+  validate:
+    name: Validate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Extract and validate version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if [[ "${VERSION}" == *-* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          if [ "${CARGO_VERSION}" != "${VERSION}" ]; then
+            echo "::error::Cargo.toml version (${CARGO_VERSION}) does not match tag (${VERSION})"
+            exit 1
+          fi
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            nats_asset: darwin-arm64
+          - os: macos-14
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            nats_asset: darwin-amd64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            nats_asset: linux-amd64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            cross: true
+            nats_asset: linux-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            nats_asset: windows-amd64
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (for arm64 linux)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Fetch bundled nats-server (POSIX)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          NV="${NATS_SERVER_VERSION}"
+          ASSET="nats-server-v${NV}-${{ matrix.nats_asset }}.tar.gz"
+          URL="https://github.com/nats-io/nats-server/releases/download/v${NV}/${ASSET}"
+          mkdir -p bundled
+          curl -fsSL -o "bundled/${ASSET}" "${URL}"
+          curl -fsSL -o "bundled/SHA256SUMS" \
+            "https://github.com/nats-io/nats-server/releases/download/v${NV}/SHA256SUMS"
+          EXPECTED=$(awk -v a="${ASSET}" '$2==a {print $1}' bundled/SHA256SUMS)
+          if [ -z "${EXPECTED}" ]; then
+            echo "::error::No SHA256 entry for ${ASSET} in upstream SHA256SUMS"
+            exit 1
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            ACTUAL=$(sha256sum "bundled/${ASSET}" | awk '{print $1}')
+          else
+            ACTUAL=$(shasum -a 256 "bundled/${ASSET}" | awk '{print $1}')
+          fi
+          if [ "${EXPECTED}" != "${ACTUAL}" ]; then
+            echo "::error::SHA256 mismatch for ${ASSET}: expected ${EXPECTED}, got ${ACTUAL}"
+            exit 1
+          fi
+          tar -C bundled -xzf "bundled/${ASSET}"
+          cp "bundled/nats-server-v${NV}-${{ matrix.nats_asset }}/nats-server" bundled/nats-server
+          chmod +x bundled/nats-server
+
+      - name: Fetch bundled nats-server (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $nv = "${env:NATS_SERVER_VERSION}"
+          $asset = "nats-server-v$nv-${{ matrix.nats_asset }}.zip"
+          $url = "https://github.com/nats-io/nats-server/releases/download/v$nv/$asset"
+          New-Item -ItemType Directory -Force -Path bundled | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile "bundled/$asset"
+          Invoke-WebRequest -Uri "https://github.com/nats-io/nats-server/releases/download/v$nv/SHA256SUMS" -OutFile "bundled/SHA256SUMS"
+          $expected = (Get-Content bundled/SHA256SUMS | Select-String -SimpleMatch $asset | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
+          if (-not $expected) { Write-Error "No SHA256 entry for $asset in upstream SHA256SUMS"; exit 1 }
+          $actual = (Get-FileHash -Algorithm SHA256 "bundled/$asset").Hash.ToLower()
+          if ($expected -ne $actual) { Write-Error "SHA256 mismatch for $asset: expected $expected, got $actual"; exit 1 }
+          Expand-Archive -Path "bundled/$asset" -DestinationPath bundled -Force
+          Copy-Item "bundled/nats-server-v$nv-${{ matrix.nats_asset }}/nats-server.exe" "bundled/nats-server.exe"
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          STAGE="hyerix-natsfixture-${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/${STAGE}"
+          cp "target/${{ matrix.target }}/release/hyerix-natsfixture" "dist/${STAGE}/"
+          cp bundled/nats-server "dist/${STAGE}/"
+          cp README.md LICENSE NOTICE "dist/${STAGE}/"
+          tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
+          (cd dist && shasum -a 256 "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256")
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $version = "${{ needs.validate.outputs.version }}"
+          $stage = "hyerix-natsfixture-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$stage" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/hyerix-natsfixture.exe" "dist/$stage/"
+          Copy-Item "bundled/nats-server.exe" "dist/$stage/"
+          Copy-Item README.md, LICENSE, NOTICE "dist/$stage/"
+          Compress-Archive -Path "dist/$stage" -DestinationPath "dist/$stage.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/$stage.zip").Hash.ToLower()
+          "$hash  $stage.zip" | Out-File -FilePath "dist/$stage.zip.sha256" -Encoding ascii
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.target }}
+          path: dist/hyerix-natsfixture-*
+
+  publish:
+    name: Publish release
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.validate.outputs.version }}
+          name: hyerix-natsfixture v${{ needs.validate.outputs.version }}
+          prerelease: ${{ needs.validate.outputs.is_prerelease == 'true' }}
+          files: |
+            dist/hyerix-natsfixture-*.tar.gz
+            dist/hyerix-natsfixture-*.tar.gz.sha256
+            dist/hyerix-natsfixture-*.zip
+            dist/hyerix-natsfixture-*.zip.sha256
+          generate_release_notes: true
+
+  update-homebrew-tap:
+    name: Update Homebrew tap
+    needs: [validate, publish]
+    if: needs.validate.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout hyerix/homebrew-tap
+        uses: actions/checkout@v5
+        with:
+          repository: hyerix/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Download SHA-256 sidecars from this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          mkdir sha
+          cd sha
+          for asset in \
+            "hyerix-natsfixture-${VERSION}-aarch64-apple-darwin.tar.gz.sha256" \
+            "hyerix-natsfixture-${VERSION}-x86_64-apple-darwin.tar.gz.sha256" \
+            "hyerix-natsfixture-${VERSION}-aarch64-unknown-linux-gnu.tar.gz.sha256" \
+            "hyerix-natsfixture-${VERSION}-x86_64-unknown-linux-gnu.tar.gz.sha256"; do
+            gh release download "v${VERSION}" --repo "${{ github.repository }}" --pattern "$asset"
+          done
+
+      - name: Regenerate Formula/hyerix-natsfixture.rb
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          SHA_DARWIN_ARM=$(awk '{print $1}' "sha/hyerix-natsfixture-${VERSION}-aarch64-apple-darwin.tar.gz.sha256")
+          SHA_DARWIN_X86=$(awk '{print $1}' "sha/hyerix-natsfixture-${VERSION}-x86_64-apple-darwin.tar.gz.sha256")
+          SHA_LINUX_ARM=$(awk '{print $1}' "sha/hyerix-natsfixture-${VERSION}-aarch64-unknown-linux-gnu.tar.gz.sha256")
+          SHA_LINUX_X86=$(awk '{print $1}' "sha/hyerix-natsfixture-${VERSION}-x86_64-unknown-linux-gnu.tar.gz.sha256")
+
+          cat > tap/Formula/hyerix-natsfixture.rb <<RUBY
+          class HyerixNatsfixture < Formula
+            desc "Single-binary, language-neutral CI fixture for NATS-dependent code"
+            homepage "https://hyerix.ai"
+            version "${VERSION}"
+            license "Apache-2.0"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/${REPO}/releases/download/v${VERSION}/hyerix-natsfixture-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_DARWIN_ARM}"
+              end
+              on_intel do
+                url "https://github.com/${REPO}/releases/download/v${VERSION}/hyerix-natsfixture-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_DARWIN_X86}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/${REPO}/releases/download/v${VERSION}/hyerix-natsfixture-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_ARM}"
+              end
+              on_intel do
+                url "https://github.com/${REPO}/releases/download/v${VERSION}/hyerix-natsfixture-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_X86}"
+              end
+            end
+
+            def install
+              libexec.install "nats-server"
+              bin.install "hyerix-natsfixture"
+              bin.install_symlink libexec/"nats-server"
+            end
+
+            test do
+              assert_match "hyerix-natsfixture #{version}", shell_output("#{bin}/hyerix-natsfixture --version")
+            end
+          end
+          RUBY
+
+      - name: Commit and push to tap (skip if no diff)
+        working-directory: tap
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          git config user.name "Hyerix Intern"
+          git config user.email "hello@hyerix.ai"
+          git add Formula/hyerix-natsfixture.rb
+          if git diff --cached --quiet; then
+            echo "Formula already at v${VERSION} — nothing to commit."
+          else
+            git commit -m "hyerix-natsfixture ${VERSION}"
+            git push
+          fi

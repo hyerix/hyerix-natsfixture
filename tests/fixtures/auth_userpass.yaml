@@ -1,0 +1,9 @@
+version: "1"
+auth:
+  mode: user_password
+  users:
+    - user: testuser
+      password: testpass
+streams:
+  - name: USERS
+    subjects: ["users.>"]

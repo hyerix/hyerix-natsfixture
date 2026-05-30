@@ -1,0 +1,7 @@
+version: "1"
+auth:
+  mode: token
+  token: "fixture-secret"
+streams:
+  - name: SECURE
+    subjects: ["secure.>"]

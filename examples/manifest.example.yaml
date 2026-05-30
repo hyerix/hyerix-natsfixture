@@ -1,0 +1,99 @@
+# hyerix-natsfixture — example manifest covering every section.
+# Copy this file, trim the sections you don't need, and point the fixture at it:
+#
+#   hyerix-natsfixture exec --manifest manifest.example.yaml -- pnpm test
+
+version: "1"
+
+# --- Listening + storage ---
+
+listen:
+  host: "127.0.0.1"
+  port: 0                       # 0 = OS-assigned (printed in the NATS_URL banner)
+
+storage:
+  # dir: ""                     # empty = mkdtemp, auto-cleaned on shutdown
+  jetstream_max_memory: "1G"
+  jetstream_max_file: "10G"
+
+# --- JetStream streams ---
+
+streams:
+  - name: ORDERS
+    subjects: ["orders.>"]
+    retention: limits           # limits | interest | workqueue
+    storage: file               # file | memory
+    max_msgs: -1
+    max_bytes: -1
+    max_age: 0
+    discard: old                # old | new
+    duplicate_window: 2m
+    seed:
+      - subject: orders.us.created
+        payload: '{"id": "test-1", "amount": 100}'
+        headers:
+          Content-Type: application/json
+      - subject: orders.eu.created
+        payload: '{"id": "test-2", "amount": 250}'
+
+  - name: AUDIT
+    subjects: ["audit.>"]
+    retention: limits
+    storage: file
+
+# --- JetStream consumers ---
+
+consumers:
+  - stream: ORDERS
+    name: order-processor       # durable name
+    deliver_policy: all         # all | last | new | by_start_sequence | by_start_time
+    ack_policy: explicit        # none | all | explicit
+    max_deliver: 5
+    ack_wait: 30s
+    filter_subject: "orders.us.>"
+
+  - stream: AUDIT
+    name: audit-archive
+    deliver_policy: new
+    ack_policy: none
+
+# --- Key-Value buckets ---
+
+kv:
+  - bucket: feature-flags
+    history: 10
+    ttl: 0
+    storage: file
+    seed:
+      payments_v2: "true"
+      shadow_writes: "false"
+      experimental_routing: "disabled"
+
+# --- Object Store buckets ---
+
+object_store:
+  - bucket: invoices
+    storage: file
+    ttl: 0
+
+# --- Auth (defaults to none; uncomment to enable) ---
+
+auth:
+  mode: none
+  # mode: token
+  # token: "test-token-replace-me"
+  #
+  # mode: user_password
+  # users:
+  #   - user: testuser
+  #     password: testpass
+  #     permissions:
+  #       publish: ["orders.>"]
+  #       subscribe: ["events.>"]
+
+# --- Logging (fixture defaults are sane; tune for debugging) ---
+
+log:
+  level: warn                   # off | error | warn | info | debug | trace
+  format: text
+  destination: stderr           # stderr | stdout | <file path>
