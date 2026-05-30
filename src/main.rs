@@ -262,6 +262,8 @@ async fn run_kill(pid_file: &Path) -> anyhow::Result<i32> {
         unsafe {
             kill(pid, 15);
         }
+        let _ = std::fs::remove_file(pid_file);
+        Ok(exit_codes::OK)
     }
     #[cfg(not(unix))]
     {
@@ -269,10 +271,8 @@ async fn run_kill(pid_file: &Path) -> anyhow::Result<i32> {
         eprintln!(
             "kill subcommand not implemented on this platform; terminate the process directly"
         );
-        return Ok(exit_codes::SERVER_FAILED);
+        Ok(exit_codes::SERVER_FAILED)
     }
-    let _ = std::fs::remove_file(pid_file);
-    Ok(exit_codes::OK)
 }
 
 async fn wait_for_signal() {

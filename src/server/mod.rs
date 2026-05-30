@@ -185,6 +185,10 @@ fn pick_free_port(host: &str) -> Result<u16> {
     Ok(port)
 }
 
+fn config_path_str(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 pub fn render_server_config(
     manifest: &Manifest,
     host: &str,
@@ -199,7 +203,7 @@ pub fn render_server_config(
     let _ = writeln!(s, "http: 0");
 
     let _ = writeln!(s, "jetstream {{");
-    let _ = writeln!(s, "  store_dir: \"{}\"", storage_dir.display());
+    let _ = writeln!(s, "  store_dir: \"{}\"", config_path_str(storage_dir));
     let _ = writeln!(
         s,
         "  max_memory_store: {}",
@@ -238,7 +242,11 @@ pub fn render_server_config(
         );
     }
     if !["stderr", "stdout", ""].contains(&manifest.log.destination.as_str()) {
-        let _ = writeln!(s, "log_file: \"{}\"", manifest.log.destination);
+        let _ = writeln!(
+            s,
+            "log_file: \"{}\"",
+            manifest.log.destination.replace('\\', "/")
+        );
     }
 
     match manifest.auth.mode {

@@ -149,7 +149,7 @@ jobs:
           $expected = (Get-Content bundled/SHA256SUMS | Select-String -SimpleMatch $asset | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
           if (-not $expected) { Write-Error "No SHA256 entry for $asset in upstream SHA256SUMS"; exit 1 }
           $actual = (Get-FileHash -Algorithm SHA256 "bundled/$asset").Hash.ToLower()
-          if ($expected -ne $actual) { Write-Error "SHA256 mismatch for $asset: expected $expected, got $actual"; exit 1 }
+          if ($expected -ne $actual) { Write-Error "SHA256 mismatch for ${asset}: expected $expected, got $actual"; exit 1 }
           Expand-Archive -Path "bundled/$asset" -DestinationPath bundled -Force
           Copy-Item "bundled/nats-server-v$nv-${{ matrix.nats_asset }}/nats-server.exe" "bundled/nats-server.exe"
 
